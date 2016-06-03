@@ -1,0 +1,54 @@
+#!/usr/bin/lua
+local site = require 'gluon.site_config'
+local uci = require('luci.model.uci').cursor()
+
+local s = uci:get_first("gluon-node-info", "location")
+
+if not uci:get('gluon-node-info',s,'enabled') or not uci:get('gluon-node-info',s,'interval') then
+  local enabled, interval
+
+  if site.autolocate ~= nil then
+    if site.autolocate.enabled == 1 then
+      enabled = 1
+    else
+      enabled = 0
+    end
+    if site.autolocate.interval > 0 then
+      interval = site.autolocate.interval
+    else
+      interval = 360
+    end
+  else
+    enabled = 0
+    interval = 360
+  end
+
+  uci:set('gluon-node-info',s,'enabled',enabled)
+  uci:set('gluon-node-info',s,'interval',interval)
+  uci:save('gluon-node-info')
+  uci:commit('gluon-node-info')
+end
+
+local cron = io.open('/usr/lib/micron.d/autolocate','w+')
+cron:write('*/',uci:get('gluon-node-info',s,'interval'),' * * * * /usr/sbin/autolocate')
+cron:close()
+
+if not uci:get_bool('gluon-node-info',s,'enabled') then
+  os.exit(0)
+end
+
+local sys = require 'luci.sys'
+local scan = {}
+for k, v in pairs(uci:get_all('wireless')) do
+  if v['.type'] == 'wifi-iface' and v['ifname'] ~= nil then
+    for k1,v1 in pairs(sys.wifi.getiwinfo(v['ifname']).scanlist) do scan[k1] = v1 end
+  end
+end
+
+local json = require 'luci.jsonc'
+local geo = io.popen(string.format("exec wget -T 120 -O- --post-data='%s' '%s'", json.stringify(scan), site.autolocate.api), 'r'):read('*a')
+
+if geo.latitude ~= nil and geo.longitude ~= nil then
+  uci:set('gluon-node-info',s,'latitude',geo.latitude)
+  uci:set('gluon-node-info',s,'longitude',geo.longitude)
+end
